@@ -9,20 +9,31 @@ import tensorflow as tf
 from DataReader import DataReader
 
 #############################super parameter
-TRANNING_READS = 10  #Total reads used
+TRANNING_READS = 1000000  #Total reads used, if None, use all.
+TRANING_EVENTS_TOTAL = 2000000 # If is None, read all the events in the training data
 TRAIN_WEIGHT = 0.4  #Proportion of reads used to train
-TEST_WEIGHT = 0.3   #Proportion of reads used to test
-VALID_WEIGHT = 0.3  #Proportion of reads used to validate
+TEST_WEIGHT = 0.4   #Proportion of reads used to test
+VALID_WEIGHT = 0.2  #Proportion of reads used to validate
 
-EVENT_LENGTH = 15
-HIDDEN_UNIT_NUM = 100#24
-STEP_RATE = 2
-BATCH_SIZE = 200
-EPOCH = 5000
+#Structure
+EVENT_LENGTH = 40 #Length of each sentence
+HIDDEN_UNIT_NUM = 24 #Length of the hidden state of each hidden layer
+CellLayer = 3 #Number of the hidden layers
+
+#Training
+STEP_RATE = 0.1
+BATCH_SIZE = 20
+EPOCH = 500
 #############################
 
+#############################Path setting
+Checkpoint_file = "Model_save.chk"
+log_file = "Record.log"
+#############################
+
+
 ###############################Read the data
-data = DataReader(TRAIN_WEIGHT,TEST_WEIGHT,VALID_WEIGHT,EVENT_LENGTH,TRANNING_READS)
+data = DataReader(TRAIN_WEIGHT,TEST_WEIGHT,VALID_WEIGHT,EVENT_LENGTH,TRANNING_READS,event_total = TRANING_EVENTS_TOTAL,file_list = '/home/haotianteng/UQ/BINF7000/Nanopore/GN_003/event_pass.dat')
 train_event = data.train_event
 train_label = data.train_base
 test_event = data.test_event
@@ -37,6 +48,7 @@ print "test size: ",len(test_event)
 x = tf.placeholder(tf.float32,[None,EVENT_LENGTH,3])###each event has three properties, e.g. [mean,dev,length]
 y = tf.placeholder(tf.float32,[None,EVENT_LENGTH,4])
 cell = tf.nn.rnn_cell.LSTMCell(HIDDEN_UNIT_NUM,state_is_tuple=True)
+cell = tf.nn.rnn_cell.MultiRNNCell([cell]*CellLayer,state_is_tuple=True)
 lasth,state = tf.nn.dynamic_rnn(cell,x,dtype = tf.float32)
 lasth = tf.transpose(lasth,[1,0,2])
 
@@ -58,12 +70,29 @@ train_step = tf.train.GradientDescentOptimizer(STEP_RATE).minimize(cross_entropy
 
 ##############################
 
+###Saver of the model
+saver = tf.train.Saver()
+##############################
+
+
 ##############################Execute the graph and train
 
 loss_val_record = []
+test_accuracy_record = []
 init = tf.initialize_all_variables()
 sess = tf.Session()
-sess.run(init)
+
+###Check if there is any save point to be reload
+try:
+    ckpt = tf.train.import_meta_graph(Checkpoint_file+'.meta')
+    # Restores from checkpoint
+    ckpt.restore(sess,Checkpoint_file)
+    print "Model loaded"
+except IOError:
+    print "No checkpoint file found"
+    sess.run(init)
+###
+
 batches_num = int(len(train_event)/BATCH_SIZE)
 for i in range(EPOCH):
     ptr = 0
@@ -71,15 +100,27 @@ for i in range(EPOCH):
         batch_x, batch_y = train_event[ptr:ptr+BATCH_SIZE], train_label[ptr:ptr+BATCH_SIZE]
         ptr+=BATCH_SIZE
         _,loss_val = sess.run([train_step,cross_entropy],feed_dict={x: batch_x, y: batch_y})
-        loss_val_record.append(loss_val)
+    loss_val_record.append(loss_val)
     print "Epoch - ",str(i),'loss = ',loss_val
     
     
 ############################Evulating the model
-    correct_prediction = tf.equal(tf.argmax(y,1), tf.argmax(y_,1))
+    correct_prediction = tf.equal(tf.argmax(y,2), tf.argmax(y_,2))
     accuracy = tf.reduce_mean(tf.cast(correct_prediction, tf.float32))
-    incorrect = sess.run(accuracy,feed_dict={x: test_event, y: test_label})
-    print('Epoch {:2d} error {:3.1f}%'.format(i + 1, 100 * incorrect))
+    correct = sess.run(accuracy,feed_dict={x: test_event, y: test_label})
+    test_accuracy_record.append(correct)
+    print('Epoch {:2d} error {:3.3f}%'.format(i + 1, 100 * correct))
+
+############################Save the model and record
+saver.save(sess,Checkpoint_file)
+log_f = open(log_file,'w+')
+log_f.write("#Loss_Value\n")
+log_f.write(",".join(str(x) for x in loss_val_record))
+log_f.write("\n")
+log_f.write("#Accuracy_Test\n")
+log_f.write(",".join(str(x) for x in test_accuracy_record))
+log_f.write("\n")
+log_f.close()
 sess.close()
 
 
